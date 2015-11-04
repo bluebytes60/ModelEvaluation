@@ -74,7 +74,7 @@ compare_models <- function(data, models, parts,
   
   s <-list();
   if(subgroup_analysis) {
-    d <- aggregate(data1$cost, by=list(entity = data$entity), FUN=sum);
+    d <- aggregate(data$spend, by=list(entity = data$entity), FUN=sum);
     names(d) <- c("entity", "spend");
     thresh <- subgroup_thresh;
     s <- subgroups(d, "spend", thresh);        
@@ -137,8 +137,8 @@ compare_models_for_measure <- function(M1, M2, var,
     importance_weights <- rep(1, 1, sum(sig_summary$included));
   }
   else {
-    importance_weights <- sig_summary$totalCost[which(sig_summary$included == TRUE)]/
-      sum(sig_summary$totalCost[which(sig_summary$included == TRUE)]);  
+    importance_weights <- sig_summary$totalSpend[which(sig_summary$included == TRUE)]/
+      sum(sig_summary$totalSpend[which(sig_summary$included == TRUE)]);  
   }
   
   if(NROW(var) == 2) {
@@ -158,9 +158,9 @@ compare_models_for_measure <- function(M1, M2, var,
         importance_weights <- rep(1, sum(sig_summary[which(sig_summary$campaign %in% subgroups[[i]]), "included"]));
       } 
       else {
-        importance_weights <- sig_summary$totalCost[which(sig_summary$included == TRUE &
+        importance_weights <- sig_summary$totalSpend[which(sig_summary$included == TRUE &
                                                             sig_summary$campaign %in% subgroups[[i]])]/
-          sum(sig_summary$totalCost[which(sig_summary$included == TRUE &
+          sum(sig_summary$totalSpend[which(sig_summary$included == TRUE &
                                             sig_summary$campaign %in% s[[i]])]);                  
       }
       meta_subgroup[[length(meta_subgroup) + 1]] <-  meta_analysis(
@@ -200,7 +200,7 @@ compare_models_per_campaign_significance <-
                        rep(0, time=NROW(ents)), rep(0, time=NROW(ents)), 
                        rep(0, time=NROW(ents)), rep(0, time=NROW(ents)),
                        rep(0, time=NROW(ents)), rep(0, time=NROW(ents)));
-    names(modelStats) <- c("campaign", "totalCost", "p1", "p2", "totalNum1", 
+    names(modelStats) <- c("campaign", "totalSpend", "p1", "p2", "totalNum1", 
                            "totalNum2",  "totalDen1", "totalDen2", 
                            "included", "sp", "T", "d", "mean1", "mean2", "std1", "std2",
                            "avgImp1", "avgImp2");
@@ -216,7 +216,7 @@ compare_models_per_campaign_significance <-
         
       }
       
-      modelStats$totalCost[i]  <- sum(ent_parts1$cost) + sum(ent_parts2$cost);
+      modelStats$totalSpend[i]  <- sum(ent_parts1$spend) + sum(ent_parts2$spend);
       
       modelStats$totalNum1[i] <- sum(ent_parts1[, var[1]]);
       modelStats$totalNum2[i] <- sum(ent_parts2[, var[1]]);
@@ -289,7 +289,7 @@ compare_models_per_campaign_significance <-
     
     modelStats <- data.frame(modelStats);
     
-    modelStats <- modelStats[order(-modelStats$totalCost),]
+    modelStats <- modelStats[order(-modelStats$totalSpend),]
     
     return(modelStats);
   }
@@ -388,9 +388,108 @@ meta_analysis <- function (sig_summary, sig_level, importance_weights,
     
     return(effect);  
   }
+  #Implementing the minimal heteregeneous set discovery algorithm
   
-  effect <- list(total_effect, inc_sig_summary)
-  names(effect) <- c("total_effect", "significance_analysis")
+  wY2 <- sum(wd * (d^2))
+  wY2s <- wd * (d^2)
+  wY <- sum(wd * d)
+  wYs <- wd^2
+  
+  idx <- rep(TRUE, ns);
+  twd <- wd;
+  
+  midx <- which.max(wd*(d-T)^2);
+  i <- ns;
+  nQ <- Qu;
+  
+  while(i > 5 & 1-pchisq(nQ, i - 1) < .09) {
+    wY2 <- wY2 - wd[midx]*(d[midx]^2);
+    wY <- wY - wd[midx]*d[midx];
+    w <- w - wd[midx];
+    
+    tT <- wY/w;
+    #excluding from the homogenous set
+    idx[midx] <- FALSE;
+    twd[midx] <- 0;
+    
+    midx <- which.max(twd*((d-tT)^2));
+    nQ <- wY2 - wY*wY/w;
+    
+    i <- i-1;
+  } 
+  
+  hom_effect <- list();
+  nonHom_effect <- list();
+  
+  if(i > 5) {
+    hwd <- wd[idx];
+    hd <- d[idx];
+    hvd <- vd[idx];
+    hc <- sum(hwd)-sum(hwd^2)/sum(hwd);
+    htau2 <- max((nQ-(length(hwd)-1))/hc, 0);
+    hvs <- hvd+htau2;
+    hws <- 1/hvs;
+    hmeta_effect_size_mean<-sum(hws*hd)/sum(hws);
+    hmeta_effect_size_var <- 1/sum(hws);
+    
+    hom_effect <- list(idx, hmeta_effect_size_mean, hmeta_effect_size_var, 
+                       hmeta_effect_size_mean/sqrt(hmeta_effect_size_var)
+                       , nQ, c(hmeta_effect_size_mean - z_v * sqrt(hmeta_effect_size_var), 
+                               hmeta_effect_size_mean + z_v * sqrt(hmeta_effect_size_var)), 
+                       c(hmeta_effect_size_mean - qt(sig_level/2, length(hwd) - 2) * 
+                           sqrt(hmeta_effect_size_var + htau2), hmeta_effect_size_mean + 
+                           qt(sig_level/2, i - 2) * sqrt(hmeta_effect_size_var + 
+                                                           htau2)), sqrt(htau2), (nQ-(i+1))/nQ*100,
+                       pchisq(nQ, i - 1), wd, d, vd, sum(hwd*((hd-hmeta_effect_size_mean)^2)))
+    names(hom_effect) <- list("idx", "meta_effect_size_mean", "meta_effect_size_var", 
+                              "z_effect", "Q", "CI", "PI", "tau", "I2", "hom_p", "wd", 
+                              "d", "vd", "Qs")
+    
+    idx <- !idx;
+    nhwd <- wd[idx];
+    nhd <- d[idx];
+    nhvd <- vd[idx];
+    nhc <- sum(nhwd)-sum(nhwd^2)/sum(nhwd);
+    
+    nhwY2 <- sum(nhwd*(nhd^2));
+    nhwY <- sum(nhwd*nhd);
+    nhw <- sum(nhwd);
+    nhQ <- nhwY2-nhwY*nhwY/nhw;
+    nhns <- length(nhwd)
+    
+    nhtau2 <- max((nhQ-(nhns-1))/nhc, 0);
+    nhvs <- nhvd+nhtau2;
+    nhws <- 1/nhvs;
+    nhmeta_effect_size_mean<-sum(nhws*nhd)/sum(nhws);
+    nhmeta_effect_size_var <- 1/sum(nhws);
+    if(nhns < 3) {
+      nonHom_effect <- list(idx, nhmeta_effect_size_mean, nhmeta_effect_size_var, nhmeta_effect_size_mean/sqrt(nhmeta_effect_size_var)
+                            , nhQ, c(nhmeta_effect_size_mean - z_v * sqrt(nhmeta_effect_size_var), 
+                                     nhmeta_effect_size_mean + z_v * sqrt(nhmeta_effect_size_var)),
+                            c(0,0), sqrt(nhtau2), (nhQ-(nhns+1))/nhQ*100, 
+                            pchisq(nhQ, i - 1), wd, d, vd, sum(nhwd*((nhd-nhmeta_effect_size_mean)^2)))                     
+      
+      
+    }
+    else {
+      nonHom_effect <- list(idx, nhmeta_effect_size_mean, nhmeta_effect_size_var, 
+                            nhmeta_effect_size_mean/sqrt(nhmeta_effect_size_var)
+                            , nhQ, c(nhmeta_effect_size_mean - z_v * sqrt(nhmeta_effect_size_var), 
+                                     nhmeta_effect_size_mean + z_v * sqrt(nhmeta_effect_size_var)), 
+                            c(nhmeta_effect_size_mean - qt(sig_level/2, nhns - 2) * 
+                                sqrt(nhmeta_effect_size_var + nhtau2), nhmeta_effect_size_mean + 
+                                qt(sig_level/2, nhns - 2) * sqrt(nhmeta_effect_size_var + 
+                                                                   nhtau2)), sqrt(nhtau2), (nhQ-(nhns+1))/nhQ*100,
+                            pchisq(nhQ, i - 1), wd, d, vd, sum(nhwd*((nhd-nhmeta_effect_size_mean)^2)))
+    }
+    names(nonHom_effect) <- list("idx", "meta_effect_size_mean", "meta_effect_size_var", 
+                                 "z_effect", "Q", "CI", "PI", "tau", "I2", "hom_p", "wd", 
+                                 "d", "vd", "Qs")   
+  }
+  
+  
+  effect <- list(total_effect, inc_sig_summary, hom_effect, nonHom_effect)
+  names(effect) <- c("total_effect", "significance_analysis", "hom_effect", "nonHom_effect")
   return(effect)
 }                         
 
@@ -425,6 +524,35 @@ printEffect <- function(Name, meta_summary, meta_subgroup = NULL ) {
                meta_summary$total_effect$z_effect,
                meta_summary$total_effect$Q,
                meta_summary$total_effect$I2, dashed_line, dashed_line);
+  m2 <- sprintf("
+                  Homogeneous group
+               %s
+                Included # of IOs=%i
+                Mean effect confidence interval=[%2f,%2f]
+                Z-score of mean effect=%2f
+                Q=%2f
+                I^2=%2f
+                %s
+                Non-Homogeneous group
+                %s
+                Included # of IOs=%i
+                Mean effect confidence interval=[%2f,%2f]
+                Z-score of mean effect=%2f
+                Q=%2f
+                I^2=%2f
+                %s", dashed_line, sum(meta_summary$hom_effect$idx),
+                meta_summary$hom_effect$CI[1],
+                meta_summary$hom_effect$CI[2],
+                meta_summary$hom_effect$z_effect,
+                meta_summary$hom_effect$Q,
+                meta_summary$hom_effect$I2,dashed_line, dashed_line,
+                sum(meta_summary$nonHom_effect$idx),
+                meta_summary$nonHom_effect$CI[1],
+                meta_summary$nonHom_effect$CI[2],
+                meta_summary$nonHom_effect$z_effect,
+                meta_summary$nonHom_effect$Q,
+                meta_summary$nonHom_effect$I2,dashed_line);   
+  m <- paste0(m, m2);
   
   if(!is.null(meta_subgroup)) {
     Qwithin <- 0;
@@ -463,9 +591,9 @@ printEffect <- function(Name, meta_summary, meta_subgroup = NULL ) {
   return(m); 
 }
 library("gap")
-models <- c(1, 2);
-parts <- c(5,5);
-data <- read.csv('sample_dataset.tsv', header = T, sep='\t');
+models <- c(419, 392);
+parts <- c(40,5);
+data <- read.csv('sample_data_2.tsv', header = T, sep='\t');
 
 
 effect <- compare_models(data, models, parts, subgroup_analysis = TRUE, AA_test = FALSE)
